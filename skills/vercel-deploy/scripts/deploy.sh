@@ -6,13 +6,6 @@
 
 set -e
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
-
 DEPLOY_ENDPOINT="https://claude-skills-deploy.vercel.com/api/deploy"
 
 # Detect framework from package.json
@@ -177,14 +170,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo -e "${CYAN}Preparing deployment...${NC}" >&2
+echo "Preparing deployment..." >&2
 
 # Check if input is a .tgz file or a directory
 FRAMEWORK="null"
 
 if [ -f "$INPUT_PATH" ] && [[ "$INPUT_PATH" == *.tgz ]]; then
     # Input is already a tarball, use it directly
-    echo -e "${CYAN}Using provided tarball...${NC}" >&2
+    echo "Using provided tarball..." >&2
     TARBALL="$INPUT_PATH"
     CLEANUP_TEMP=false
     # Can't detect framework from tarball, leave as null
@@ -206,32 +199,32 @@ elif [ -d "$INPUT_PATH" ]; then
             HTML_FILE=$(echo "$HTML_FILES" | head -1)
             BASENAME=$(basename "$HTML_FILE")
             if [ "$BASENAME" != "index.html" ]; then
-                echo -e "${YELLOW}Renaming $BASENAME to index.html...${NC}" >&2
+                echo "Renaming $BASENAME to index.html..." >&2
                 mv "$HTML_FILE" "$PROJECT_PATH/index.html"
             fi
         fi
     fi
 
     # Create tarball of the project (excluding node_modules and .git)
-    echo -e "${CYAN}Creating deployment package...${NC}" >&2
+    echo "Creating deployment package..." >&2
     tar -czf "$TARBALL" -C "$PROJECT_PATH" --exclude='node_modules' --exclude='.git' .
 else
-    echo -e "${RED}Error: Input must be a directory or a .tgz file${NC}" >&2
+    echo "Error: Input must be a directory or a .tgz file" >&2
     exit 1
 fi
 
 if [ "$FRAMEWORK" != "null" ]; then
-    echo -e "${CYAN}Detected framework: ${FRAMEWORK}${NC}" >&2
+    echo "Detected framework: $FRAMEWORK" >&2
 fi
 
 # Deploy
-echo -e "${GREEN}Deploying...${NC}" >&2
+echo "Deploying..." >&2
 RESPONSE=$(curl -s -X POST "$DEPLOY_ENDPOINT" -F "file=@$TARBALL" -F "framework=$FRAMEWORK")
 
 # Check for error in response
 if echo "$RESPONSE" | grep -q '"error"'; then
     ERROR_MSG=$(echo "$RESPONSE" | grep -o '"error":"[^"]*"' | cut -d'"' -f4)
-    echo -e "${RED}Error: ${ERROR_MSG}${NC}" >&2
+    echo "Error: $ERROR_MSG" >&2
     exit 1
 fi
 
@@ -240,15 +233,16 @@ PREVIEW_URL=$(echo "$RESPONSE" | grep -o '"previewUrl":"[^"]*"' | cut -d'"' -f4)
 CLAIM_URL=$(echo "$RESPONSE" | grep -o '"claimUrl":"[^"]*"' | cut -d'"' -f4)
 
 if [ -z "$PREVIEW_URL" ]; then
-    echo -e "${RED}Error: Could not extract preview URL from response${NC}" >&2
+    echo "Error: Could not extract preview URL from response" >&2
     echo "$RESPONSE" >&2
     exit 1
 fi
 
-echo -e "${GREEN}✓ Deployment successful!${NC}" >&2
 echo "" >&2
-echo -e "${GREEN}Preview URL: ${PREVIEW_URL}${NC}" >&2
-echo -e "${CYAN}Claim URL:   ${CLAIM_URL}${NC}" >&2
+echo "Deployment successful!" >&2
+echo "" >&2
+echo "Preview URL: $PREVIEW_URL" >&2
+echo "Claim URL:   $CLAIM_URL" >&2
 echo "" >&2
 
 # Output JSON for programmatic use
