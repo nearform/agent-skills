@@ -4,107 +4,109 @@ This file provides guidance to AI coding agents (Claude Code, Cursor, Copilot, e
 
 ## Repository Overview
 
-A collection of skills for Claude.ai and Claude Code for working with Vercel deployments. Skills are packaged instructions and scripts that extend Claude's capabilities.
+A collection of Node.js best practices skills for AI coding agents from Nearform. Skills are packaged instructions and comprehensive guides that help agents write better Node.js and Fastify code.
 
-## Creating a New Skill
+## Skills in This Repository
 
-### Directory Structure
+### nodejs-best-practices
+
+A comprehensive skill containing 48 rules across 8 categories for Node.js and Fastify development:
+
+- **Performance & Security** (Critical): Event loop, security headers, input validation, streaming, memory leaks, compression
+- **API Design & Database** (Critical): RESTful design, pagination, connection pooling, query optimization, N+1 prevention, transactions
+- **Error Handling & Logging** (High): Centralized errors, structured logging, async errors, sensitive data protection
+- **Fastify Optimization** (Medium-High): Schema validation, hooks, plugins, decorators, serialization
+- **Async Patterns** (Medium): Parallelization, error handling, backpressure, rate limiting, queues, timeouts
+- **Caching & State** (Medium): LRU cache, Redis, HTTP headers, cache invalidation
+- **Code Organization** (Low-Medium): Module structure, dependency injection, configuration, testing, TypeScript
+- **Monitoring & Diagnostics** (Low): Health checks, metrics, APM, memory/CPU profiling, distributed tracing
+
+## Working with Skills
+
+### Building the Skill
+
+```bash
+cd packages/nodejs-best-practices-build
+pnpm install
+pnpm build
+```
+
+This compiles all individual rule files from `skills/nodejs-best-practices/rules/` into a single `AGENTS.md` comprehensive guide.
+
+### Adding New Rules
+
+1. Copy the template: `skills/nodejs-best-practices/rules/_template.md`
+2. Name with appropriate prefix:
+   - `perf-` for Performance & Security
+   - `api-` for API Design & Database
+   - `error-` for Error Handling & Logging
+   - `fastify-` for Fastify Optimization
+   - `async-` for Async Patterns
+   - `cache-` for Caching & State
+   - `code-` for Code Organization
+   - `monitor-` for Monitoring & Diagnostics
+3. Fill in the frontmatter (title, impact, tags)
+4. Add incorrect and correct code examples
+5. Run `pnpm build` to regenerate AGENTS.md
+
+### Validating Rules
+
+```bash
+cd packages/nodejs-best-practices-build
+pnpm validate
+```
+
+This checks that all rule files have correct frontmatter, examples, and formatting.
+
+## Repository Structure
 
 ```
 skills/
-  {skill-name}/           # kebab-case directory name
-    SKILL.md              # Required: skill definition
-    scripts/              # Required: executable scripts
-      {script-name}.sh    # Bash scripts (preferred)
-  {skill-name}.zip        # Required: packaged for distribution
+  nodejs-best-practices/
+    SKILL.md              # Skill definition for agents
+    AGENTS.md             # Compiled comprehensive guide (generated)
+    metadata.json         # Skill metadata
+    README.md             # Developer documentation
+    rules/
+      _sections.md        # Section definitions
+      _template.md        # Rule template
+      perf-*.md           # Performance & Security rules
+      api-*.md            # API Design & Database rules
+      error-*.md          # Error Handling & Logging rules
+      fastify-*.md        # Fastify Optimization rules
+      async-*.md          # Async Patterns rules
+      cache-*.md          # Caching & State rules
+      code-*.md           # Code Organization rules
+      monitor-*.md        # Monitoring & Diagnostics rules
+
+packages/
+  nodejs-best-practices-build/
+    src/
+      build.ts            # Builds AGENTS.md from rules
+      validate.ts         # Validates rule files
+      parser.ts           # Parses rule frontmatter and content
+      extract-tests.ts    # Extracts test cases
 ```
 
-### Naming Conventions
+## Guidelines for AI Agents
 
-- **Skill directory**: `kebab-case` (e.g., `vercel-deploy`, `log-monitor`)
-- **SKILL.md**: Always uppercase, always this exact filename
-- **Scripts**: `kebab-case.sh` (e.g., `deploy.sh`, `fetch-logs.sh`)
-- **Zip file**: Must match directory name exactly: `{skill-name}.zip`
+When working with this repository:
 
-### SKILL.md Format
+1. **Follow the existing structure**: Rules are organized by category prefix
+2. **Maintain consistent formatting**: Use the template for new rules
+3. **Provide real-world examples**: Show both incorrect and correct code
+4. **Focus on Node.js/Fastify**: Examples should use Node.js, Fastify, or framework-agnostic patterns
+5. **Include impact metrics**: Quantify improvements where possible (e.g., "10-100× faster")
+6. **Reference authoritative sources**: Link to official Node.js, Fastify, or library documentation
+7. **Use TypeScript**: Code examples should use TypeScript for type safety
+8. **Test your changes**: Run `pnpm validate && pnpm build` before committing
 
-```markdown
----
-name: {skill-name}
-description: {One sentence describing when to use this skill. Include trigger phrases like "Deploy my app", "Check logs", etc.}
----
+## Contributing
 
-# {Skill Title}
+This repository is maintained by Nearform. When adding or modifying rules:
 
-{Brief description of what the skill does.}
-
-## How It Works
-
-{Numbered list explaining the skill's workflow}
-
-## Usage
-
-```bash
-bash /mnt/skills/user/{skill-name}/scripts/{script}.sh [args]
-```
-
-**Arguments:**
-- `arg1` - Description (defaults to X)
-
-**Examples:**
-{Show 2-3 common usage patterns}
-
-## Output
-
-{Show example output users will see}
-
-## Present Results to User
-
-{Template for how Claude should format results when presenting to users}
-
-## Troubleshooting
-
-{Common issues and solutions, especially network/permissions errors}
-```
-
-### Best Practices for Context Efficiency
-
-Skills are loaded on-demand — only the skill name and description are loaded at startup. The full `SKILL.md` loads into context only when the agent decides the skill is relevant. To minimize context usage:
-
-- **Keep SKILL.md under 500 lines** — put detailed reference material in separate files
-- **Write specific descriptions** — helps the agent know exactly when to activate the skill
-- **Use progressive disclosure** — reference supporting files that get read only when needed
-- **Prefer scripts over inline code** — script execution doesn't consume context (only output does)
-- **File references work one level deep** — link directly from SKILL.md to supporting files
-
-### Script Requirements
-
-- Use `#!/bin/bash` shebang
-- Use `set -e` for fail-fast behavior
-- Write status messages to stderr: `echo "Message" >&2`
-- Write machine-readable output (JSON) to stdout
-- Include a cleanup trap for temp files
-- Reference the script path as `/mnt/skills/user/{skill-name}/scripts/{script}.sh`
-
-### Creating the Zip Package
-
-After creating or updating a skill:
-
-```bash
-cd skills
-zip -r {skill-name}.zip {skill-name}/
-```
-
-### End-User Installation
-
-Document these two installation methods for users:
-
-**Claude Code:**
-```bash
-cp -r skills/{skill-name} ~/.claude/skills/
-```
-
-**claude.ai:**
-Add the skill to project knowledge or paste SKILL.md contents into the conversation.
-
-If the skill requires network access, instruct users to add required domains at `claude.ai/settings/capabilities`.
+1. Ensure the rule follows Nearform's Node.js expertise and best practices
+2. Focus on production-grade patterns used in real-world applications
+3. Consider performance, security, and reliability equally
+4. Prioritize rules that prevent common mistakes or critical issues
+5. Build and validate before creating a pull request

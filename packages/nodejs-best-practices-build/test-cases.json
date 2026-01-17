@@ -1,0 +1,746 @@
+[
+  {
+    "ruleId": "",
+    "ruleTitle": "Use Connection Pooling",
+    "type": "bad",
+    "code": "import Fastify from 'fastify'\nimport { Client } from 'pg'\n\nconst app = Fastify()\n\napp.get('/users/:id', async (request, reply) => {\n  // Creates new connection for every request\n  const client = new Client({\n    host: 'localhost',\n    database: 'mydb'\n  })\n\n  await client.connect() // ~50-100ms overhead\n\n  const result = await client.query(\n    'SELECT * FROM users WHERE id = $1',\n    [request.params.id]\n  )\n\n  await client.end()\n\n  return result.rows[0]\n})\n// 50-100ms connection overhead per request",
+    "language": "typescript",
+    "description": "new connection per request"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Use Connection Pooling",
+    "type": "good",
+    "code": "import Fastify from 'fastify'\nimport { Pool } from 'pg'\n\nconst pool = new Pool({\n  host: 'localhost',\n  database: 'mydb',\n  max: 20, // Maximum pool size\n  idleTimeoutMillis: 30000,\n  connectionTimeoutMillis: 2000,\n})\n\nconst app = Fastify()\n\napp.get('/users/:id', async (request, reply) => {\n  // Reuses existing connection from pool\n  const result = await pool.query(\n    'SELECT * FROM users WHERE id = $1',\n    [request.params.id]\n  )\n\n  return result.rows[0]\n})\n// ~1ms to get connection from pool",
+    "language": "typescript",
+    "description": "using connection pool"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Prevent N+1 Query Problems",
+    "type": "bad",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify()\n\napp.get('/users-with-posts', async (request, reply) => {\n  // 1 query for users\n  const users = await db.query('SELECT * FROM users LIMIT 100')\n\n  // N additional queries (one per user)\n  const usersWithPosts = await Promise.all(\n    users.rows.map(async (user) => {\n      const posts = await db.query(\n        'SELECT * FROM posts WHERE user_id = $1',\n        [user.id]\n      )\n      return { ...user, posts: posts.rows }\n    })\n  )\n\n  return usersWithPosts\n})\n// 1 + 100 = 101 queries for 100 users",
+    "language": "typescript",
+    "description": "N+1 queries"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Prevent N+1 Query Problems",
+    "type": "good",
+    "code": "app.get('/users-with-posts', async (request, reply) => {\n  // Single query with JOIN\n  const result = await db.query(`\n    SELECT\n      u.id, u.name, u.email,\n      json_agg(json_build_object(\n        'id', p.id,\n        'title', p.title,\n        'content', p.content,\n        'created_at', p.created_at\n      )) as posts\n    FROM users u\n    LEFT JOIN posts p ON p.user_id = u.id\n    GROUP BY u.id\n    LIMIT 100\n  `)\n\n  return result.rows\n})\n// 1 query for 100 users with all their posts",
+    "language": "typescript",
+    "description": "single JOIN query"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Implement Efficient Pagination",
+    "type": "bad",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify()\n\napp.get('/users', async (request, reply) => {\n  // Returns ALL users - could be millions\n  const users = await db.query('SELECT * FROM users')\n  return users\n})\n// Memory usage grows unbounded, slow queries",
+    "language": "typescript",
+    "description": "no pagination"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Implement Efficient Pagination",
+    "type": "good",
+    "code": "app.get('/users', {\n  schema: {\n    querystring: {\n      type: 'object',\n      properties: {\n        page: { type: 'integer', minimum: 1, default: 1 },\n        limit: { type: 'integer', minimum: 1, maximum: 100, default: 20 }\n      }\n    }\n  }\n}, async (request, reply) => {\n  const { page, limit } = request.query\n  const offset = (page - 1) * limit\n\n  const [users, total] = await Promise.all([\n    db.query('SELECT * FROM users LIMIT $1 OFFSET $2', [limit, offset]),\n    db.query('SELECT COUNT(*) as count FROM users')\n  ])\n\n  return {\n    data: users,\n    pagination: {\n      page,\n      limit,\n      total: total[0].count,\n      totalPages: Math.ceil(total[0].count / limit)\n    }\n  }\n})",
+    "language": "typescript",
+    "description": "offset-based pagination"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Optimize Database Queries",
+    "type": "bad",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify()\n\napp.get('/users/:id', async (request, reply) => {\n  // Selects ALL columns (wasteful)\n  const result = await db.query('SELECT * FROM users WHERE id = $1', [request.params.id])\n\n  // Returns only 3 fields, but fetched all\n  return {\n    name: result.rows[0].name,\n    email: result.rows[0].email,\n    createdAt: result.rows[0].created_at\n  }\n})\n\napp.get('/posts', async (request, reply) => {\n  // Missing index on created_at - full table scan\n  const posts = await db.query('SELECT * FROM posts ORDER BY created_at DESC LIMIT 20')\n\n  return posts.rows\n})",
+    "language": "typescript",
+    "description": "inefficient queries"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Optimize Database Queries",
+    "type": "good",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify()\n\napp.get('/users/:id', async (request, reply) => {\n  // Select only needed columns\n  const result = await db.query(\n    'SELECT name, email, created_at FROM users WHERE id = $1',\n    [request.params.id]\n  )\n\n  return result.rows[0]\n})\n\napp.get('/posts', async (request, reply) => {\n  // Assumes index exists: CREATE INDEX idx_posts_created_at ON posts(created_at DESC)\n  const posts = await db.query(`\n    SELECT id, title, author_id, created_at\n    FROM posts\n    ORDER BY created_at DESC\n    LIMIT 20\n  `)\n\n  return posts.rows\n})",
+    "language": "typescript",
+    "description": "optimized queries"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Follow RESTful Design Principles",
+    "type": "bad",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify()\n\n// Non-semantic endpoints\napp.post('/getUserById', async (request, reply) => {\n  const { userId } = request.body\n  return await db.getUser(userId)\n})\n\napp.post('/deleteUser', async (request, reply) => {\n  const { userId } = request.body\n  await db.deleteUser(userId)\n  return { success: true }\n})\n\napp.post('/updateUserEmail', async (request, reply) => {\n  const { userId, email } = request.body\n  await db.updateUser(userId, { email })\n  return { success: true }\n})",
+    "language": "typescript",
+    "description": "non-RESTful design"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Follow RESTful Design Principles",
+    "type": "good",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify()\n\n// GET for retrieving resources\napp.get('/users/:id', async (request, reply) => {\n  const user = await db.getUser(request.params.id)\n  if (!user) {\n    return reply.code(404).send({ error: 'User not found' })\n  }\n  return user\n})\n\n// POST for creating resources\napp.post('/users', async (request, reply) => {\n  const user = await db.createUser(request.body)\n  return reply.code(201).send(user)\n})\n\n// PUT for full updates\napp.put('/users/:id', async (request, reply) => {\n  const user = await db.updateUser(request.params.id, request.body)\n  if (!user) {\n    return reply.code(404).send({ error: 'User not found' })\n  }\n  return user\n})\n\n// PATCH for partial updates\napp.patch('/users/:id', async (request, reply) => {\n  const user = await db.partialUpdateUser(request.params.id, request.body)\n  if (!user) {\n    return reply.code(404).send({ error: 'User not found' })\n  }\n  return user\n})\n\n// DELETE for removing resources\napp.delete('/users/:id', async (request, reply) => {\n  const deleted = await db.deleteUser(request.params.id)\n  if (!deleted) {\n    return reply.code(404).send({ error: 'User not found' })\n  }\n  return reply.code(204).send()\n})",
+    "language": "typescript",
+    "description": "RESTful design"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Handle Transactions Properly",
+    "type": "bad",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify()\n\napp.post('/transfer', async (request, reply) => {\n  const { fromAccountId, toAccountId, amount } = request.body\n\n  // Deduct from source account\n  await db.query(\n    'UPDATE accounts SET balance = balance - $1 WHERE id = $2',\n    [amount, fromAccountId]\n  )\n\n  // If this fails, money is lost!\n  await db.query(\n    'UPDATE accounts SET balance = balance + $1 WHERE id = $2',\n    [amount, toAccountId]\n  )\n\n  return { success: true }\n})\n// If second query fails, data is corrupted",
+    "language": "typescript",
+    "description": "no transaction"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Handle Transactions Properly",
+    "type": "good",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify()\n\napp.post('/transfer', async (request, reply) => {\n  const { fromAccountId, toAccountId, amount } = request.body\n\n  const client = await pool.connect()\n\n  try {\n    await client.query('BEGIN')\n\n    // Deduct from source account\n    const from = await client.query(\n      'UPDATE accounts SET balance = balance - $1 WHERE id = $2 RETURNING balance',\n      [amount, fromAccountId]\n    )\n\n    // Check for insufficient funds\n    if (from.rows[0].balance < 0) {\n      throw new Error('Insufficient funds')\n    }\n\n    // Add to destination account\n    await client.query(\n      'UPDATE accounts SET balance = balance + $1 WHERE id = $2',\n      [amount, toAccountId]\n    )\n\n    await client.query('COMMIT')\n\n    return { success: true }\n  } catch (error) {\n    await client.query('ROLLBACK')\n    throw error\n  } finally {\n    client.release()\n  }\n})",
+    "language": "typescript",
+    "description": "using transaction"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Handle Backpressure in Streams",
+    "type": "bad",
+    "code": "readableStream.on('data', (chunk) => {\n  writableStream.write(chunk) // Ignores backpressure signal\n})",
+    "language": "typescript",
+    "description": "ignoring backpressure"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Handle Backpressure in Streams",
+    "type": "good",
+    "code": "readableStream.on('data', (chunk) => {\n  const canContinue = writableStream.write(chunk)\n  if (!canContinue) {\n    readableStream.pause()\n  }\n})\n\nwritableStream.on('drain', () => {\n  readableStream.resume()\n})",
+    "language": "typescript",
+    "description": "handling backpressure"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Handle Async Errors Gracefully",
+    "type": "bad",
+    "code": "const results = await Promise.all([\n  fetchUserData(),\n  fetchAnalytics(),\n  fetchNotifications()\n])\n// If any fails, all results are lost",
+    "language": "typescript",
+    "description": "all-or-nothing"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Handle Async Errors Gracefully",
+    "type": "good",
+    "code": "const results = await Promise.allSettled([\n  fetchUserData(),\n  fetchAnalytics(),\n  fetchNotifications()\n])\n\nreturn {\n  userData: results[0].status === 'fulfilled' ? results[0].value : null,\n  analytics: results[1].status === 'fulfilled' ? results[1].value : null,\n  notifications: results[2].status === 'fulfilled' ? results[2].value : []\n}",
+    "language": "typescript",
+    "description": "partial results"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Parallelize Independent Operations",
+    "type": "bad",
+    "code": "app.get('/dashboard', async (request, reply) => {\n  const users = await db.getUsers() // 100ms\n  const posts = await db.getPosts() // 100ms\n  const comments = await db.getComments() // 100ms\n  return { users, posts, comments }\n})\n// Total: 300ms",
+    "language": "typescript",
+    "description": "sequential execution"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Parallelize Independent Operations",
+    "type": "good",
+    "code": "app.get('/dashboard', async (request, reply) => {\n  const [users, posts, comments] = await Promise.all([\n    db.getUsers(),\n    db.getPosts(),\n    db.getComments()\n  ])\n  return { users, posts, comments }\n})\n// Total: 100ms",
+    "language": "typescript",
+    "description": "parallel execution"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Use Queues for Background Jobs",
+    "type": "bad",
+    "code": "app.post('/orders', async (request, reply) => {\n  const order = await db.createOrder(request.body)\n\n  // Fire-and-forget (unreliable)\n  sendConfirmationEmail(order.email)\n  updateInventory(order.items)\n\n  return order\n})",
+    "language": "typescript",
+    "description": "fire-and-forget"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Use Queues for Background Jobs",
+    "type": "good",
+    "code": "import Queue from 'bull'\n\nconst emailQueue = new Queue('emails', process.env.REDIS_URL)\nconst inventoryQueue = new Queue('inventory', process.env.REDIS_URL)\n\napp.post('/orders', async (request, reply) => {\n  const order = await db.createOrder(request.body)\n\n  // Add to queues (reliable, retriable)\n  await emailQueue.add({ email: order.email, orderId: order.id })\n  await inventoryQueue.add({ items: order.items })\n\n  return order\n})",
+    "language": "typescript",
+    "description": "using Bull queue"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Implement Rate Limiting",
+    "type": "bad",
+    "code": "app.post('/api/send-email', async (request, reply) => {\n  await sendEmail(request.body)\n  return { sent: true }\n})\n// Vulnerable to abuse",
+    "language": "typescript",
+    "description": "no rate limiting"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Implement Rate Limiting",
+    "type": "good",
+    "code": "import rateLimit from '@fastify/rate-limit'\n\nawait app.register(rateLimit, {\n  max: 100, // 100 requests\n  timeWindow: '15 minutes'\n})\n\napp.post('/api/send-email', async (request, reply) => {\n  await sendEmail(request.body)\n  return { sent: true }\n})",
+    "language": "typescript",
+    "description": "with rate limiting"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Set Timeouts for Operations",
+    "type": "bad",
+    "code": "app.get('/external-data', async (request, reply) => {\n  // Can hang indefinitely if external API is slow\n  const data = await fetch('https://external-api.com/data')\n  return data.json()\n})",
+    "language": "typescript",
+    "description": "no timeout"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Set Timeouts for Operations",
+    "type": "good",
+    "code": "async function fetchWithTimeout(url, timeout = 5000) {\n  const controller = new AbortController()\n  const timeoutId = setTimeout(() => controller.abort(), timeout)\n\n  try {\n    const response = await fetch(url, { signal: controller.signal })\n    return await response.json()\n  } finally {\n    clearTimeout(timeoutId)\n  }\n}\n\napp.get('/external-data', async (request, reply) => {\n  const data = await fetchWithTimeout('https://external-api.com/data', 5000)\n  return data\n})",
+    "language": "typescript",
+    "description": "with timeout"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Cache Database Queries",
+    "type": "bad",
+    "code": "app.get('/popular-products', async (request, reply) => {\n  // Expensive query runs on every request\n  const products = await db.query(`\n    SELECT * FROM products\n    ORDER BY sales DESC\n    LIMIT 10\n  `)\n  return products\n})",
+    "language": "typescript",
+    "description": "no query caching"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Cache Database Queries",
+    "type": "good",
+    "code": "app.get('/popular-products', async (request, reply) => {\n  const cacheKey = 'popular-products'\n  let products = await redis.get(cacheKey)\n\n  if (!products) {\n    products = await db.query(`\n      SELECT * FROM products\n      ORDER BY sales DESC\n      LIMIT 10\n    `)\n    await redis.setex(cacheKey, 300, JSON.stringify(products)) // 5 min TTL\n  } else {\n    products = JSON.parse(products)\n  }\n\n  return products\n})",
+    "language": "typescript",
+    "description": "with query caching"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Use HTTP Caching Headers",
+    "type": "bad",
+    "code": "app.get('/products/:id', async (request, reply) => {\n  const product = await db.getProduct(request.params.id)\n  return product\n})",
+    "language": "typescript",
+    "description": "no caching headers"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Use HTTP Caching Headers",
+    "type": "good",
+    "code": "app.get('/products/:id', async (request, reply) => {\n  const product = await db.getProduct(request.params.id)\n\n  reply.header('Cache-Control', 'public, max-age=300, s-maxage=600')\n  reply.header('ETag', generateETag(product))\n\n  return product\n})",
+    "language": "typescript",
+    "description": "with caching headers"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Implement Cache Invalidation",
+    "type": "bad",
+    "code": "const cache = new Map()\n\napp.put('/products/:id', async (request, reply) => {\n  await db.updateProduct(request.params.id, request.body)\n  return { updated: true }\n})\n// Cache is not invalidated, returns stale data",
+    "language": "typescript",
+    "description": "stale cache"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Implement Cache Invalidation",
+    "type": "good",
+    "code": "app.put('/products/:id', async (request, reply) => {\n  await db.updateProduct(request.params.id, request.body)\n\n  // Invalidate cache\n  cache.delete(`product:${request.params.id}`)\n  await redis.del(`product:${request.params.id}`)\n\n  return { updated: true }\n})",
+    "language": "typescript",
+    "description": "with invalidation"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Use In-Memory LRU Caching",
+    "type": "bad",
+    "code": "app.get('/products/:id', async (request, reply) => {\n  // Database query on every request\n  const product = await db.query('SELECT * FROM products WHERE id = $1', [request.params.id])\n  return product\n})",
+    "language": "typescript",
+    "description": "no caching"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Use In-Memory LRU Caching",
+    "type": "good",
+    "code": "import { LRUCache } from 'lru-cache'\n\nconst productCache = new LRUCache({\n  max: 500, // Maximum 500 items\n  ttl: 1000 * 60 * 5, // 5 minutes\n})\n\napp.get('/products/:id', async (request, reply) => {\n  const productId = request.params.id\n  let product = productCache.get(productId)\n\n  if (!product) {\n    product = await db.query('SELECT * FROM products WHERE id = $1', [productId])\n    productCache.set(productId, product)\n  }\n\n  return product\n})",
+    "language": "typescript",
+    "description": "LRU cache"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Implement Redis Caching",
+    "type": "bad",
+    "code": "const localCache = new Map()\n\napp.get('/config', async (request, reply) => {\n  let config = localCache.get('config')\n  if (!config) {\n    config = await db.getConfig()\n    localCache.set('config', config)\n  }\n  return config\n})\n// Each server has its own cache",
+    "language": "typescript",
+    "description": "no shared cache"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Implement Redis Caching",
+    "type": "good",
+    "code": "import Redis from 'ioredis'\n\nconst redis = new Redis(process.env.REDIS_URL)\n\napp.get('/config', async (request, reply) => {\n  let config = await redis.get('config')\n\n  if (!config) {\n    config = await db.getConfig()\n    await redis.setex('config', 3600, JSON.stringify(config)) // 1 hour TTL\n  } else {\n    config = JSON.parse(config)\n  }\n\n  return config\n})\n// All servers share the same cache",
+    "language": "typescript",
+    "description": "Redis cache"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Use Stale-While-Revalidate Pattern",
+    "type": "good",
+    "code": "async function getWithSWR(key, fetcher, ttl = 300) {\n  const cached = await redis.get(key)\n  const staleTime = await redis.get(`${key}:stale`)\n\n  if (cached) {\n    // Check if stale\n    if (Date.now() > parseInt(staleTime)) {\n      // Refresh in background\n      fetcher().then(data => redis.setex(key, ttl, JSON.stringify(data)))\n    }\n    return JSON.parse(cached)\n  }\n\n  const data = await fetcher()\n  await redis.setex(key, ttl, JSON.stringify(data))\n  await redis.setex(`${key}:stale`, ttl / 2, Date.now() + (ttl / 2 * 1000))\n  return data\n}",
+    "language": "typescript",
+    "description": "stale-while-revalidate"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Manage Configuration Properly",
+    "type": "bad",
+    "code": "const dbHost = process.env.DB_HOST || 'localhost'\nconst dbPort = parseInt(process.env.DB_PORT) || 5432\n// Config scattered throughout codebase",
+    "language": "typescript",
+    "description": "scattered config"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Manage Configuration Properly",
+    "type": "good",
+    "code": "import { z } from 'zod'\n\nconst configSchema = z.object({\n  database: z.object({\n    host: z.string(),\n    port: z.number(),\n    password: z.string().min(8)\n  }),\n  server: z.object({\n    port: z.number().default(3000)\n  })\n})\n\nconst config = configSchema.parse({\n  database: {\n    host: process.env.DB_HOST,\n    port: parseInt(process.env.DB_PORT),\n    password: process.env.DB_PASSWORD\n  },\n  server: {\n    port: parseInt(process.env.PORT)\n  }\n})\n\nexport default config",
+    "language": "typescript",
+    "description": "centralized config"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Use Dependency Injection",
+    "type": "bad",
+    "code": "class UserService {\n  async getUser(id) {\n    // Tightly coupled to specific database implementation\n    const db = new PostgresDatabase()\n    return await db.query('SELECT * FROM users WHERE id = $1', [id])\n  }\n}",
+    "language": "typescript",
+    "description": "tight coupling"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Use Dependency Injection",
+    "type": "good",
+    "code": "class UserService {\n  constructor(database) {\n    this.db = database\n  }\n\n  async getUser(id) {\n    return await this.db.query('SELECT * FROM users WHERE id = $1', [id])\n  }\n}\n\n// In tests, inject mock database\nconst userService = new UserService(mockDatabase)",
+    "language": "typescript",
+    "description": "dependency injection"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Handle Environment Variables",
+    "type": "bad",
+    "code": "const apiKey = process.env.API_KEY\n// apiKey might be undefined, causing runtime errors",
+    "language": "typescript",
+    "description": "missing validation"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Handle Environment Variables",
+    "type": "good",
+    "code": "import 'dotenv/config'\n\nfunction getEnvVar(name, defaultValue) {\n  const value = process.env[name]\n  if (value === undefined && defaultValue === undefined) {\n    throw new Error(`Missing required environment variable: ${name}`)\n  }\n  return value || defaultValue\n}\n\nconst config = {\n  apiKey: getEnvVar('API_KEY'),\n  port: parseInt(getEnvVar('PORT', '3000'))\n}",
+    "language": "typescript",
+    "description": "with validation"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Organize Code by Feature",
+    "type": "bad",
+    "code": "src/\n├── controllers/\n│   ├── userController.js\n│   └── orderController.js\n├── services/\n│   ├── userService.js\n│   └── orderService.js\n└── models/\n    ├── User.js\n    └── Order.js",
+    "language": "typescript",
+    "description": "layer-based organization"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Organize Code by Feature",
+    "type": "good",
+    "code": "src/\n├── users/\n│   ├── user.controller.js\n│   ├── user.service.js\n│   ├── user.model.js\n│   └── user.routes.js\n└── orders/\n    ├── order.controller.js\n    ├── order.service.js\n    ├── order.model.js\n    └── order.routes.js",
+    "language": "typescript",
+    "description": "feature-based organization"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Write Testable Code",
+    "type": "bad",
+    "code": "async function processOrder(orderId) {\n  const db = new Database()\n  const order = await db.getOrder(orderId)\n  await sendEmail(order.email)\n  return order\n}\n// Hard to test - tightly coupled to database and email service",
+    "language": "typescript",
+    "description": "hard to test"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Write Testable Code",
+    "type": "good",
+    "code": "async function processOrder(orderId, { database, emailService }) {\n  const order = await database.getOrder(orderId)\n  await emailService.send(order.email)\n  return order\n}\n\n// In tests, inject mocks\nconst result = await processOrder(123, {\n  database: mockDatabase,\n  emailService: mockEmailService\n})",
+    "language": "typescript",
+    "description": "testable"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Use TypeScript Effectively",
+    "type": "bad",
+    "code": "function calculateTotal(items: any[]) {\n  return items.reduce((sum, item) => sum + item.price, 0)\n}\n// No type safety, errors at runtime",
+    "language": "typescript",
+    "description": "loose typing"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Use TypeScript Effectively",
+    "type": "good",
+    "code": "interface OrderItem {\n  id: string\n  price: number\n  quantity: number\n}\n\nfunction calculateTotal(items: OrderItem[]): number {\n  return items.reduce((sum, item) => sum + (item.price * item.quantity), 0)\n}\n// Type-safe, errors at compile time",
+    "language": "typescript",
+    "description": "strict typing"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Handle Async Errors Properly",
+    "type": "bad",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify()\n\napp.get('/users/:id', (request, reply) => {\n  // Missing await - error won't be caught\n  db.getUser(request.params.id).then(user => {\n    reply.send(user)\n  })\n  // If db.getUser rejects, it's unhandled\n})\n\napp.post('/process', async (request, reply) => {\n  const result = await processData(request.body)\n\n  // Fire-and-forget - errors are unhandled\n  sendNotification(result.userId)\n\n  return result\n})",
+    "language": "typescript",
+    "description": "missing error handling"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Handle Async Errors Properly",
+    "type": "good",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify()\n\n// Use async/await for route handlers\napp.get('/users/:id', async (request, reply) => {\n  // Errors automatically caught by Fastify\n  const user = await db.getUser(request.params.id)\n  return user\n})\n\napp.post('/process', async (request, reply) => {\n  const result = await processData(request.body)\n\n  // Handle background operations properly\n  sendNotification(result.userId).catch(err => {\n    request.log.error({ err, userId: result.userId }, 'Failed to send notification')\n  })\n\n  return result\n})",
+    "language": "typescript",
+    "description": "proper async error handling"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Centralize Error Handling",
+    "type": "bad",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify()\n\napp.get('/users/:id', async (request, reply) => {\n  try {\n    const user = await db.getUser(request.params.id)\n    return user\n  } catch (error) {\n    // Inconsistent error handling\n    return reply.code(500).send({ error: error.message })\n  }\n})\n\napp.get('/posts/:id', async (request, reply) => {\n  try {\n    const post = await db.getPost(request.params.id)\n    return post\n  } catch (error) {\n    // Different error format\n    return reply.code(500).send({ message: 'Error fetching post' })\n  }\n})",
+    "language": "typescript",
+    "description": "scattered error handling"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Centralize Error Handling",
+    "type": "good",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify()\n\n// Custom error classes\nclass NotFoundError extends Error {\n  constructor(message) {\n    super(message)\n    this.name = 'NotFoundError'\n    this.statusCode = 404\n  }\n}\n\nclass ValidationError extends Error {\n  constructor(message) {\n    super(message)\n    this.name = 'ValidationError'\n    this.statusCode = 400\n  }\n}\n\n// Centralized error handler\napp.setErrorHandler((error, request, reply) => {\n  const statusCode = error.statusCode || 500\n\n  // Log error with context\n  request.log.error({\n    err: error,\n    req: request,\n    statusCode\n  })\n\n  // Send consistent error response\n  reply.code(statusCode).send({\n    error: {\n      message: statusCode === 500 ? 'Internal Server Error' : error.message,\n      statusCode,\n      ...(process.env.NODE_ENV === 'development' && { stack: error.stack })\n    }\n  })\n})\n\n// Routes can now throw errors\napp.get('/users/:id', async (request, reply) => {\n  const user = await db.getUser(request.params.id)\n\n  if (!user) {\n    throw new NotFoundError('User not found')\n  }\n\n  return user\n})\n\napp.get('/posts/:id', async (request, reply) => {\n  const post = await db.getPost(request.params.id)\n\n  if (!post) {\n    throw new NotFoundError('Post not found')\n  }\n\n  return post\n})",
+    "language": "typescript",
+    "description": "centralized error handler"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Log Requests Efficiently",
+    "type": "bad",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify()\n\napp.addHook('onRequest', async (request, reply) => {\n  // Logs every field, including large bodies\n  console.log('Request:', JSON.stringify({\n    method: request.method,\n    url: request.url,\n    headers: request.headers,\n    body: request.body, // Can be very large!\n    query: request.query\n  }))\n})\n\napp.get('/health', async () => {\n  // Health checks logged on every request (noisy)\n  return { status: 'ok' }\n})",
+    "language": "typescript",
+    "description": "excessive or missing logging"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Log Requests Efficiently",
+    "type": "good",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify({\n  logger: {\n    level: 'info',\n    serializers: {\n      req(request) {\n        return {\n          method: request.method,\n          url: request.url,\n          path: request.routerPath,\n          parameters: request.params,\n          headers: {\n            host: request.headers.host,\n            userAgent: request.headers['user-agent'],\n            referer: request.headers.referer\n          },\n          remoteAddress: request.ip,\n        }\n      },\n      res(response) {\n        return {\n          statusCode: response.statusCode,\n        }\n      }\n    }\n  }\n})\n\n// Exclude noisy endpoints from logging\napp.get('/health', {\n  logLevel: 'silent'\n}, async () => {\n  return { status: 'ok' }\n})\n\napp.get('/metrics', {\n  logLevel: 'silent'\n}, async () => {\n  return getMetrics()\n})",
+    "language": "typescript",
+    "description": "efficient request logging"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Don't Leak Sensitive Data in Errors",
+    "type": "bad",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify()\n\napp.get('/users/:id', async (request, reply) => {\n  try {\n    const user = await db.query(\n      'SELECT * FROM users WHERE id = $1 AND api_key = $2',\n      [request.params.id, process.env.DB_API_KEY]\n    )\n    return user.rows[0]\n  } catch (error) {\n    // Exposes database schema, file paths, and stack trace\n    return reply.code(500).send({\n      error: error.message,\n      stack: error.stack,\n      query: error.query // Might contain API keys!\n    })\n  }\n})",
+    "language": "typescript",
+    "description": "leaks sensitive data"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Don't Leak Sensitive Data in Errors",
+    "type": "good",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify()\n\napp.setErrorHandler((error, request, reply) => {\n  // Log full error internally\n  request.log.error({\n    err: error,\n    req: {\n      method: request.method,\n      url: request.url,\n      params: request.params\n    }\n  })\n\n  // Send safe error to client\n  const statusCode = error.statusCode || 500\n  const isProduction = process.env.NODE_ENV === 'production'\n\n  reply.code(statusCode).send({\n    error: {\n      message: isProduction && statusCode === 500\n        ? 'Internal Server Error'\n        : error.message,\n      statusCode,\n      // Only include stack in development\n      ...((!isProduction) && { stack: error.stack })\n    }\n  })\n})\n\napp.get('/users/:id', async (request, reply) => {\n  const user = await db.getUser(request.params.id)\n\n  if (!user) {\n    throw new Error('User not found')\n  }\n\n  return user\n})",
+    "language": "typescript",
+    "description": "safe error responses"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Use Structured Logging",
+    "type": "bad",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify({ logger: true })\n\napp.get('/users/:id', async (request, reply) => {\n  const userId = request.params.id\n  console.log('Fetching user with ID: ' + userId)\n\n  const user = await db.getUser(userId)\n  console.log('User found: ' + user.name + ', email: ' + user.email)\n\n  return user\n})\n// Output: \"Fetching user with ID: 123\"\n// Cannot easily query by userId or filter by operation",
+    "language": "typescript",
+    "description": "string concatenation"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Use Structured Logging",
+    "type": "good",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify({\n  logger: {\n    level: 'info',\n    serializers: {\n      req: (req) => ({\n        method: req.method,\n        url: req.url,\n        headers: req.headers,\n        remoteAddress: req.ip,\n      }),\n      res: (res) => ({\n        statusCode: res.statusCode,\n      }),\n    },\n  },\n})\n\napp.get('/users/:id', async (request, reply) => {\n  const userId = request.params.id\n\n  request.log.info({ userId, operation: 'fetch_user' }, 'Fetching user')\n\n  const user = await db.getUser(userId)\n\n  request.log.info({\n    userId,\n    userName: user.name,\n    operation: 'user_found'\n  }, 'User retrieved successfully')\n\n  return user\n})\n// Output: {\"level\":30,\"time\":1674000000000,\"userId\":\"123\",\"operation\":\"fetch_user\",\"msg\":\"Fetching user\"}",
+    "language": "typescript",
+    "description": "structured logging with Pino"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Handle Unhandled Rejections",
+    "type": "bad",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify()\n\napp.listen({ port: 3000 })\n\n// Background task without error handling\nsetInterval(async () => {\n  // If this throws, it's unhandled and will crash the app\n  await syncDataWithExternalAPI()\n}, 60000)",
+    "language": "typescript",
+    "description": "no rejection handler"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Handle Unhandled Rejections",
+    "type": "good",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify()\n\n// Handle unhandled promise rejections\nprocess.on('unhandledRejection', (reason, promise) => {\n  console.error('Unhandled Rejection at:', promise, 'reason:', reason)\n\n  // Log to error tracking service\n  errorTracker.captureException(reason)\n\n  // Don't exit immediately - allow in-flight requests to complete\n  // But set a flag to prevent new requests\n})\n\n// Handle uncaught exceptions\nprocess.on('uncaughtException', (error) => {\n  console.error('Uncaught Exception:', error)\n\n  // Log to error tracking service\n  errorTracker.captureException(error)\n\n  // Gracefully shutdown\n  gracefulShutdown()\n})\n\n// Background task with proper error handling\nsetInterval(async () => {\n  try {\n    await syncDataWithExternalAPI()\n  } catch (error) {\n    console.error('Background sync failed:', error)\n    // Handle error but don't crash\n  }\n}, 60000)\n\napp.listen({ port: 3000 })",
+    "language": "typescript",
+    "description": "global rejection handler"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Handle Content Types Properly",
+    "type": "bad",
+    "code": "app.post('/upload', async (request, reply) => {\n  // request.body is undefined for multipart/form-data\n  const file = request.body.file\n  return { uploaded: true }\n})",
+    "language": "typescript",
+    "description": "missing content type handling"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Handle Content Types Properly",
+    "type": "good",
+    "code": "import multipart from '@fastify/multipart'\n\nawait app.register(multipart, {\n  limits: {\n    fileSize: 10 * 1024 * 1024 // 10MB\n  }\n})\n\napp.post('/upload', async (request, reply) => {\n  const data = await request.file()\n\n  const buffer = await data.toBuffer()\n\n  await saveFile(data.filename, buffer)\n\n  return { uploaded: true, filename: data.filename }\n})",
+    "language": "typescript",
+    "description": "proper content type handling"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Use Decorators Effectively",
+    "type": "bad",
+    "code": "let currentUser = null\n\napp.addHook('preHandler', async (request, reply) => {\n  currentUser = await authenticate(request.headers.authorization)\n})\n\napp.get('/profile', async () => {\n  return currentUser // Not type-safe, prone to race conditions\n})",
+    "language": "typescript",
+    "description": "global variables"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Use Decorators Effectively",
+    "type": "good",
+    "code": "app.decorateRequest('currentUser', null)\n\napp.addHook('preHandler', async (request, reply) => {\n  request.currentUser = await authenticate(request.headers.authorization)\n})\n\napp.get('/profile', async (request, reply) => {\n  return request.currentUser // Type-safe, request-scoped\n})",
+    "language": "typescript",
+    "description": "request decorators"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Optimize Hook Usage",
+    "type": "bad",
+    "code": "app.addHook('onRequest', async (request, reply) => {\n  // Expensive operation blocks every request\n  const config = await loadConfigFromDatabase()\n  request.config = config\n})",
+    "language": "typescript",
+    "description": "blocking hooks"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Optimize Hook Usage",
+    "type": "good",
+    "code": "// Load config once at startup\nconst config = await loadConfig()\n\napp.addHook('onRequest', async (request, reply) => {\n  // Fast, non-blocking operation\n  request.startTime = Date.now()\n})\n\napp.addHook('onResponse', async (request, reply) => {\n  const duration = Date.now() - request.startTime\n  request.log.info({ duration, url: request.url })\n})",
+    "language": "typescript",
+    "description": "efficient hooks"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Design Reusable Plugins",
+    "type": "bad",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify()\n\n// Database logic mixed with routes\napp.get('/users', async (request, reply) => {\n  const client = new DatabaseClient(process.env.DB_URL)\n  await client.connect()\n  const users = await client.query('SELECT * FROM users')\n  await client.disconnect()\n  return users\n})",
+    "language": "typescript",
+    "description": "tightly coupled code"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Design Reusable Plugins",
+    "type": "good",
+    "code": "import Fastify from 'fastify'\nimport fp from 'fastify-plugin'\n\n// Database plugin\nconst dbPlugin = fp(async (fastify, options) => {\n  const client = new DatabaseClient(options.url)\n  await client.connect()\n\n  fastify.decorate('db', client)\n\n  fastify.addHook('onClose', async () => {\n    await client.disconnect()\n  })\n})\n\nconst app = Fastify()\n\nawait app.register(dbPlugin, { url: process.env.DB_URL })\n\n// Routes use the decorated db instance\napp.get('/users', async (request, reply) => {\n  const users = await request.server.db.query('SELECT * FROM users')\n  return users\n})",
+    "language": "typescript",
+    "description": "plugin-based architecture"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Use JSON Schema Validation",
+    "type": "bad",
+    "code": "import Fastify from 'fastify'\nimport { z } from 'zod'\n\nconst app = Fastify()\n\napp.post('/users', async (request, reply) => {\n  // Runtime validation on every request\n  const schema = z.object({\n    email: z.string().email(),\n    age: z.number().min(0).max(150)\n  })\n\n  const validated = schema.parse(request.body) // Slow\n  return await db.createUser(validated)\n})",
+    "language": "typescript",
+    "description": "runtime validation"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Use JSON Schema Validation",
+    "type": "good",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify()\n\napp.post('/users', {\n  schema: {\n    body: {\n      type: 'object',\n      required: ['email', 'age'],\n      properties: {\n        email: { type: 'string', format: 'email' },\n        age: { type: 'integer', minimum: 0, maximum: 150 }\n      },\n      additionalProperties: false\n    },\n    response: {\n      201: {\n        type: 'object',\n        properties: {\n          id: { type: 'string' },\n          email: { type: 'string' },\n          age: { type: 'integer' }\n        }\n      }\n    }\n  }\n}, async (request, reply) => {\n  // Body is already validated and type-safe\n  const user = await db.createUser(request.body)\n  return reply.code(201).send(user)\n})",
+    "language": "typescript",
+    "description": "JSON schema validation"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Optimize JSON Serialization",
+    "type": "bad",
+    "code": "app.get('/users', async () => {\n  const users = await db.getUsers()\n  return users // Uses JSON.stringify (slow)\n})",
+    "language": "typescript",
+    "description": "no response schema"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Optimize JSON Serialization",
+    "type": "good",
+    "code": "app.get('/users', {\n  schema: {\n    response: {\n      200: {\n        type: 'array',\n        items: {\n          type: 'object',\n          properties: {\n            id: { type: 'string' },\n            name: { type: 'string' },\n            email: { type: 'string' }\n          }\n        }\n      }\n    }\n  }\n}, async () => {\n  const users = await db.getUsers()\n  return users // Uses fast-json-stringify (fast)\n})",
+    "language": "typescript",
+    "description": "with response schema"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Integrate APM Tools",
+    "type": "good",
+    "code": "// Load APM as first import\nimport apm from 'elastic-apm-node'\n\napm.start({\n  serviceName: 'my-api',\n  serverUrl: process.env.APM_SERVER_URL,\n  environment: process.env.NODE_ENV\n})\n\nimport Fastify from 'fastify'\n\nconst app = Fastify()\n\napp.get('/users/:id', async (request, reply) => {\n  const span = apm.startSpan('db.getUser')\n  const user = await db.getUser(request.params.id)\n  span?.end()\n\n  return user\n})",
+    "language": "typescript",
+    "description": "with APM integration"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Profile CPU Usage",
+    "type": "good",
+    "code": "import v8Profiler from 'v8-profiler-next'\n\napp.post('/admin/profile/start', async (request, reply) => {\n  v8Profiler.startProfiling('CPU', true)\n  return { started: true }\n})\n\napp.post('/admin/profile/stop', async (request, reply) => {\n  const profile = v8Profiler.stopProfiling('CPU')\n\n  profile.export((error, result) => {\n    if (!error) {\n      fs.writeFileSync('profile.cpuprofile', result)\n      profile.delete()\n    }\n  })\n\n  return { completed: true }\n})\n\n// Or use clinic.js for production profiling\n// npm install -g clinic\n// clinic doctor -- node app.js",
+    "language": "typescript",
+    "description": "CPU profiling"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Implement Distributed Tracing",
+    "type": "good",
+    "code": "import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node'\nimport { registerInstrumentations } from '@opentelemetry/instrumentation'\nimport { FastifyInstrumentation } from '@opentelemetry/instrumentation-fastify'\n\nconst provider = new NodeTracerProvider()\nprovider.register()\n\nregisterInstrumentations({\n  instrumentations: [\n    new FastifyInstrumentation()\n  ]\n})\n\nimport Fastify from 'fastify'\n\nconst app = Fastify()\n\napp.addHook('onRequest', async (request, reply) => {\n  // Trace ID automatically propagated\n  request.log.info({ traceId: request.id }, 'Request started')\n})\n\napp.get('/users/:id', async (request, reply) => {\n  // Automatically traced\n  const user = await db.getUser(request.params.id)\n  return user\n})",
+    "language": "typescript",
+    "description": "OpenTelemetry tracing"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Implement Health Check Endpoints",
+    "type": "good",
+    "code": "app.get('/health', { logLevel: 'silent' }, async (request, reply) => {\n  return { status: 'ok', timestamp: Date.now() }\n})\n\napp.get('/health/ready', async (request, reply) => {\n  try {\n    await db.query('SELECT 1')\n    await redis.ping()\n    return { status: 'ready', services: { database: 'up', redis: 'up' } }\n  } catch (error) {\n    return reply.code(503).send({ status: 'not ready', error: error.message })\n  }\n})\n\napp.get('/health/live', async (request, reply) => {\n  return { status: 'alive' }\n})",
+    "language": "typescript",
+    "description": "health check endpoints"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Monitor Memory Usage",
+    "type": "good",
+    "code": "app.get('/metrics/memory', async (request, reply) => {\n  const usage = process.memoryUsage()\n\n  return {\n    heapUsed: Math.round(usage.heapUsed / 1024 / 1024) + ' MB',\n    heapTotal: Math.round(usage.heapTotal / 1024 / 1024) + ' MB',\n    rss: Math.round(usage.rss / 1024 / 1024) + ' MB',\n    external: Math.round(usage.external / 1024 / 1024) + ' MB'\n  }\n})\n\n// Alert if memory usage exceeds threshold\nsetInterval(() => {\n  const usage = process.memoryUsage()\n  const heapUsedMB = usage.heapUsed / 1024 / 1024\n\n  if (heapUsedMB > 500) {\n    console.warn(`High memory usage: ${heapUsedMB.toFixed(2)} MB`)\n  }\n}, 60000)",
+    "language": "typescript",
+    "description": "memory monitoring"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Collect Application Metrics",
+    "type": "good",
+    "code": "import promClient from 'prom-client'\n\nconst register = new promClient.Register()\n\nconst httpRequestDuration = new promClient.Histogram({\n  name: 'http_request_duration_seconds',\n  help: 'Duration of HTTP requests in seconds',\n  labelNames: ['method', 'route', 'status_code']\n})\n\nregister.registerMetric(httpRequestDuration)\n\napp.addHook('onResponse', (request, reply, done) => {\n  httpRequestDuration\n    .labels(request.method, request.routerPath, reply.statusCode.toString())\n    .observe(reply.getResponseTime() / 1000)\n  done()\n})\n\napp.get('/metrics', async (request, reply) => {\n  reply.type('text/plain')\n  return await register.metrics()\n})",
+    "language": "typescript",
+    "description": "Prometheus metrics"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Detect and Prevent Event Loop Blocking",
+    "type": "bad",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify()\n\napp.post('/process', async (request, reply) => {\n  const data = request.body.data\n\n  // Synchronous processing blocks event loop\n  const result = data.map(item => {\n    return expensiveCalculation(item) // 100ms each\n  })\n\n  return { result }\n})",
+    "language": "typescript",
+    "description": "blocks event loop for all users"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Detect and Prevent Event Loop Blocking",
+    "type": "good",
+    "code": "import Fastify from 'fastify'\nimport { Worker } from 'worker_threads'\n\nconst app = Fastify()\n\napp.post('/process', async (request, reply) => {\n  const data = request.body.data\n\n  // Offload to worker thread\n  const result = await new Promise((resolve, reject) => {\n    const worker = new Worker('./worker.js', {\n      workerData: data\n    })\n    worker.on('message', resolve)\n    worker.on('error', reject)\n    worker.on('exit', (code) => {\n      if (code !== 0) reject(new Error(`Worker stopped with code ${code}`))\n    })\n  })\n\n  return { result }\n})",
+    "language": "typescript",
+    "description": "offload to worker thread"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Implement Compression Strategies",
+    "type": "bad",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify()\n\napp.get('/api/data', async (request, reply) => {\n  const data = await getLargeDataset() // 500KB JSON\n\n  return data\n})\n// Sends 500KB uncompressed over the network",
+    "language": "typescript",
+    "description": "no compression"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Implement Compression Strategies",
+    "type": "good",
+    "code": "import Fastify from 'fastify'\nimport compress from '@fastify/compress'\n\nconst app = Fastify()\n\nawait app.register(compress, {\n  global: true,\n  threshold: 1024, // Only compress responses > 1KB\n  encodings: ['gzip', 'deflate', 'br'] // Support brotli, gzip, deflate\n})\n\napp.get('/api/data', async (request, reply) => {\n  const data = await getLargeDataset() // 500KB JSON\n\n  return data\n})\n// Sends ~100KB compressed (80% reduction)",
+    "language": "typescript",
+    "description": "using @fastify/compress"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Validate and Sanitize All Inputs",
+    "type": "bad",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify()\n\napp.post('/api/users', async (request, reply) => {\n  const { email, age } = request.body\n\n  // Direct use without validation - vulnerable to injection\n  await db.query(`INSERT INTO users (email, age) VALUES ('${email}', ${age})`)\n\n  return { success: true }\n})",
+    "language": "typescript",
+    "description": "no validation"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Validate and Sanitize All Inputs",
+    "type": "good",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify()\n\napp.post('/api/users', {\n  schema: {\n    body: {\n      type: 'object',\n      required: ['email', 'age'],\n      properties: {\n        email: {\n          type: 'string',\n          format: 'email',\n          maxLength: 255\n        },\n        age: {\n          type: 'integer',\n          minimum: 0,\n          maximum: 150\n        }\n      },\n      additionalProperties: false\n    }\n  }\n}, async (request, reply) => {\n  // Input is now validated and type-safe\n  const { email, age } = request.body\n\n  // Use parameterized queries to prevent SQL injection\n  await db.query(\n    'INSERT INTO users (email, age) VALUES ($1, $2)',\n    [email, age]\n  )\n\n  return { success: true }\n})",
+    "language": "typescript",
+    "description": "Fastify schema validation"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Prevent Memory Leaks",
+    "type": "bad",
+    "code": "import Fastify from 'fastify'\nimport { EventEmitter } from 'events'\n\nconst app = Fastify()\nconst events = new EventEmitter()\n\napp.get('/subscribe', async (request, reply) => {\n  // Listener never removed - leaks memory\n  events.on('update', (data) => {\n    console.log('Update received:', data)\n  })\n\n  return { subscribed: true }\n})\n// Each request adds a new listener that's never removed",
+    "language": "typescript",
+    "description": "event listener leak"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Prevent Memory Leaks",
+    "type": "good",
+    "code": "import Fastify from 'fastify'\nimport { EventEmitter } from 'events'\n\nconst app = Fastify()\nconst events = new EventEmitter()\n\napp.get('/subscribe', async (request, reply) => {\n  const handler = (data) => {\n    console.log('Update received:', data)\n  }\n\n  events.on('update', handler)\n\n  // Cleanup when connection closes\n  request.raw.on('close', () => {\n    events.off('update', handler)\n  })\n\n  return { subscribed: true }\n})",
+    "language": "typescript",
+    "description": "cleanup event listeners"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Prevent Memory Leaks",
+    "type": "bad",
+    "code": "app.get('/users/:id', async (request, reply) => {\n  const connection = await pool.getConnection()\n\n  // If query throws, connection is never released\n  const user = await connection.query(\n    'SELECT * FROM users WHERE id = ?',\n    [request.params.id]\n  )\n\n  connection.release()\n  return user\n})",
+    "language": "typescript",
+    "description": "database connection leak"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Prevent Memory Leaks",
+    "type": "good",
+    "code": "app.get('/users/:id', async (request, reply) => {\n  const connection = await pool.getConnection()\n\n  try {\n    const user = await connection.query(\n      'SELECT * FROM users WHERE id = ?',\n      [request.params.id]\n    )\n    return user\n  } finally {\n    // Always release connection\n    connection.release()\n  }\n})",
+    "language": "typescript",
+    "description": "ensure connection cleanup"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Prevent Memory Leaks",
+    "type": "bad",
+    "code": "function createHandler(largeData) {\n  // Closure captures largeData forever\n  return async (request, reply) => {\n    // Only uses a small part of largeData\n    return { id: largeData.id }\n  }\n}\n\napp.get('/data', createHandler(massiveObject))",
+    "language": "typescript",
+    "description": "closure capturing large objects"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Prevent Memory Leaks",
+    "type": "good",
+    "code": "function createHandler(largeData) {\n  // Extract only the needed property\n  const id = largeData.id\n\n  return async (request, reply) => {\n    // largeData can now be garbage collected\n    return { id }\n  }\n}\n\napp.get('/data', createHandler(massiveObject))",
+    "language": "typescript",
+    "description": "extract only what's needed"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Implement Essential Security Headers",
+    "type": "bad",
+    "code": "import Fastify from 'fastify'\n\nconst app = Fastify()\n\napp.get('/api/users', async (request, reply) => {\n  return { users: await getUsers() }\n})\n// Missing: CSP, X-Frame-Options, X-Content-Type-Options, etc.",
+    "language": "typescript",
+    "description": "no security headers"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Implement Essential Security Headers",
+    "type": "good",
+    "code": "import Fastify from 'fastify'\nimport helmet from '@fastify/helmet'\n\nconst app = Fastify()\n\n// Apply security headers\nawait app.register(helmet, {\n  contentSecurityPolicy: {\n    directives: {\n      defaultSrc: [\"'self'\"],\n      styleSrc: [\"'self'\", \"'unsafe-inline'\"],\n      scriptSrc: [\"'self'\"],\n      imgSrc: [\"'self'\", 'data:', 'https:'],\n    },\n  },\n  hsts: {\n    maxAge: 31536000,\n    includeSubDomains: true,\n    preload: true\n  }\n})\n\napp.get('/api/users', async (request, reply) => {\n  return { users: await getUsers() }\n})",
+    "language": "typescript",
+    "description": "using @fastify/helmet"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Use Streams for Large Payloads",
+    "type": "bad",
+    "code": "import Fastify from 'fastify'\nimport { readFile } from 'fs/promises'\n\nconst app = Fastify()\n\napp.get('/download/:filename', async (request, reply) => {\n  const { filename } = request.params\n\n  // Loads entire 1GB file into memory\n  const content = await readFile(`./files/${filename}`)\n\n  reply.type('application/octet-stream')\n  return content\n})\n// Memory usage: ~1GB per concurrent request",
+    "language": "typescript",
+    "description": "loads entire file into memory"
+  },
+  {
+    "ruleId": "",
+    "ruleTitle": "Use Streams for Large Payloads",
+    "type": "good",
+    "code": "import Fastify from 'fastify'\nimport { createReadStream } from 'fs'\nimport { pipeline } from 'stream/promises'\n\nconst app = Fastify()\n\napp.get('/download/:filename', async (request, reply) => {\n  const { filename } = request.params\n\n  const stream = createReadStream(`./files/${filename}`)\n\n  reply.type('application/octet-stream')\n  return reply.send(stream)\n})\n// Memory usage: ~64KB per concurrent request",
+    "language": "typescript",
+    "description": "streams the file"
+  }
+]

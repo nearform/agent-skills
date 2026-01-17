@@ -1,0 +1,17 @@
+{
+  "version": "1.0.0",
+  "organization": "Nearform",
+  "date": "January 2026",
+  "abstract": "Comprehensive guide for Node.js and Fastify applications, designed for AI agents and LLMs. Contains 48 rules across 8 categories, prioritized by impact from critical (performance & security, API design) to incremental (monitoring & diagnostics). Each rule includes detailed explanations, real-world examples comparing incorrect vs. correct implementations, and specific impact metrics to guide automated refactoring and code generation.",
+  "references": [
+    "https://nodejs.org/docs",
+    "https://fastify.dev",
+    "https://github.com/pinojs/pino",
+    "https://github.com/luin/ioredis",
+    "https://github.com/isaacs/node-lru-cache",
+    "https://github.com/OptimalBits/bull",
+    "https://www.npmjs.com/package/helmet",
+    "https://clinicjs.org",
+    "https://github.com/graphql/dataloader"
+  ]
+}
